@@ -82,8 +82,8 @@ export default function WarzonePanel() {
         search || null,
         sort,
       );
-      setPosts(res.data);
-      setTotal(res.total);
+      setPosts(res.data ?? []);
+      setTotal(res.total ?? 0);
     } catch (err) {
       if (err.message?.includes("429")) {
         setRateLimited(true);
@@ -139,8 +139,17 @@ export default function WarzonePanel() {
   async function handleDelete(postId) {
     try {
       await deletePost(postId);
-      setPosts((prev) => prev.filter((p) => p.id !== postId));
-      setTotal((t) => t - 1);
+
+      if (auth.role === "ADMIN") {
+        setPosts((prev) =>
+          prev.map((p) =>
+            p.id === postId ? { ...p, deletedAt: new Date().toISOString() } : p,
+          ),
+        );
+      } else {
+        setPosts((prev) => prev.filter((p) => p.id !== postId));
+        setTotal((t) => t - 1);
+      }
     } catch (err) {
       if (err.message?.includes("429")) setRateLimited(true);
       else setError("Could not delete post");
@@ -184,7 +193,7 @@ export default function WarzonePanel() {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h2 className="text-xl font-bold text-gray-900 dark:text-white">
-              ⚔️ War Stories
+              War Stories
             </h2>
             <p className="text-sm text-gray-500 mt-0.5">
               Real situations from real developers
@@ -322,7 +331,6 @@ export default function WarzonePanel() {
           </div>
         ) : posts.length === 0 ? (
           <div className="text-center py-16">
-            <p className="text-4xl mb-3">⚔️</p>
             <p className="text-gray-500 font-medium">
               {search ? "No stories match your search" : "No stories yet"}
             </p>

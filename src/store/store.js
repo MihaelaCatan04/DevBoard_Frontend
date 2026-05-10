@@ -7,12 +7,13 @@ import authReducer from "./authSlice";
 
 const profilePersistConfig = { key: "devboard_profile", storage };
 const themePersistConfig = { key: "devboard_theme", storage };
+const authPersistConfig = { key: "devboard_auth", storage };
 
 export const store = configureStore({
   reducer: {
     profile: persistReducer(profilePersistConfig, profileReducer),
     theme: persistReducer(themePersistConfig, themeReducer),
-    auth: authReducer,
+    auth: persistReducer(authPersistConfig, authReducer),
   },
   middleware: (getDefaultMiddleware) =>
     getDefaultMiddleware({
