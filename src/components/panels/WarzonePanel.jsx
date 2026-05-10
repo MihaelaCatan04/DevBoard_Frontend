@@ -1,6 +1,5 @@
-import { useState, useEffect } from "react";
-import { useSelector, useDispatch } from "react-redux";
-import { logout } from "../../store/authSlice";
+import { useState, useEffect, useCallback } from "react";
+import { useSelector } from "react-redux";
 import {
   fetchPosts,
   createPost,
@@ -11,12 +10,52 @@ import {
   deleteComment,
 } from "../../services/warzone";
 import AuthPage from "../../pages/AuthPage";
+import PostDetailPage from "../../pages/PostDetailPage";
 
 const LIMIT = 5;
 
+function RateLimitBanner({ onDismiss }) {
+  const [seconds, setSeconds] = useState(60);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setSeconds((s) => {
+        if (s <= 1) {
+          clearInterval(interval);
+          onDismiss();
+          return 0;
+        }
+        return s - 1;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [onDismiss]);
+
+  return (
+    <div className="bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 rounded-lg px-4 py-3 mb-4 flex items-center justify-between">
+      <div className="flex items-center gap-3">
+        <span className="text-orange-500 text-lg">⚠️</span>
+        <div>
+          <p className="text-sm font-medium text-orange-700 dark:text-orange-400">
+            Too many requests
+          </p>
+          <p className="text-xs text-orange-600 dark:text-orange-500 mt-0.5">
+            Slow down — you can try again in {seconds}s
+          </p>
+        </div>
+      </div>
+      <button
+        onClick={onDismiss}
+        className="text-orange-400 hover:text-orange-600 transition-colors"
+      >
+        ✕
+      </button>
+    </div>
+  );
+}
+
 export default function WarzonePanel() {
   const auth = useSelector((state) => state.auth);
-  const dispatch = useDispatch();
 
   const [posts, setPosts] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -25,27 +64,47 @@ export default function WarzonePanel() {
   const [showForm, setShowForm] = useState(false);
   const [showAuth, setShowAuth] = useState(false);
   const [tagFilter, setTagFilter] = useState("");
+  const [search, setSearch] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+  const [sort, setSort] = useState("date");
   const [error, setError] = useState(null);
+  const [rateLimited, setRateLimited] = useState(false);
+  const [selectedPost, setSelectedPost] = useState(null);
 
-  useEffect(() => {
-    loadPosts();
-  }, [skip, tagFilter]);
-
-  async function loadPosts() {
+  const loadPosts = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetchPosts(LIMIT, skip, tagFilter || null);
+      const res = await fetchPosts(
+        LIMIT,
+        skip,
+        tagFilter || null,
+        search || null,
+        sort,
+      );
       setPosts(res.data);
       setTotal(res.total);
-    } catch {
-      setError("Could not load posts");
+    } catch (err) {
+      if (err.message?.includes("429")) {
+        setRateLimited(true);
+      } else {
+        setError("Could not load posts");
+      }
     } finally {
       setLoading(false);
     }
-  }
+  }, [skip, tagFilter, search, sort]);
 
-  function requireAuth(action) {
+  useEffect(() => {
+    loadPosts();
+  }, [loadPosts]);
+
+  useEffect(() => {
+    const interval = setInterval(loadPosts, 30000);
+    return () => clearInterval(interval);
+  }, [loadPosts]);
+
+  function requireAuth() {
     if (!auth.isLoggedIn) {
       setShowAuth(true);
       return false;
@@ -54,35 +113,78 @@ export default function WarzonePanel() {
   }
 
   async function handleCreate(data) {
-    await createPost(data.title, data.body, data.tag);
-    setShowForm(false);
-    setSkip(0);
-    loadPosts();
+    try {
+      await createPost(data.title, data.body, data.tag);
+      setShowForm(false);
+      setSkip(0);
+      loadPosts();
+    } catch (err) {
+      if (err.message?.includes("429")) setRateLimited(true);
+      else setError("Could not create post — try again");
+    }
   }
 
   async function handleVote(postId, direction) {
     if (!requireAuth()) return;
-    await votePost(postId, direction);
-    setPosts((prev) =>
-      prev.map((p) =>
-        p.id === postId ? { ...p, votes: p.votes + direction } : p,
-      ),
-    );
+    try {
+      const data = await votePost(postId, direction);
+      setPosts((prev) =>
+        prev.map((p) => (p.id === postId ? { ...p, votes: data.votes } : p)),
+      );
+    } catch (err) {
+      if (err.message?.includes("429")) setRateLimited(true);
+    }
   }
 
   async function handleDelete(postId) {
-    await deletePost(postId);
-    loadPosts();
+    try {
+      await deletePost(postId);
+      setPosts((prev) => prev.filter((p) => p.id !== postId));
+      setTotal((t) => t - 1);
+    } catch (err) {
+      if (err.message?.includes("429")) setRateLimited(true);
+      else setError("Could not delete post");
+    }
+  }
+
+  function handleSearch() {
+    setSearch(searchInput);
+    setSkip(0);
+  }
+
+  function handleClearSearch() {
+    setSearch("");
+    setSearchInput("");
+    setSkip(0);
+  }
+
+  if (selectedPost) {
+    return (
+      <PostDetailPage
+        post={selectedPost}
+        onBack={() => setSelectedPost(null)}
+        onDelete={(id) => {
+          setPosts((prev) => prev.filter((p) => p.id !== id));
+          setTotal((t) => t - 1);
+          setSelectedPost(null);
+        }}
+      />
+    );
   }
 
   return (
     <>
       <div>
+        {/* Rate limit banner */}
+        {rateLimited && (
+          <RateLimitBanner onDismiss={() => setRateLimited(false)} />
+        )}
+
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <div>
             <h2 className="text-xl font-bold text-gray-900 dark:text-white">
-              War Stories
+              ⚔️ War Stories
             </h2>
             <p className="text-sm text-gray-500 mt-0.5">
               Real situations from real developers
@@ -93,10 +195,52 @@ export default function WarzonePanel() {
               if (!requireAuth()) return;
               setShowForm(true);
             }}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm font-medium transition-colors"
+            disabled={rateLimited}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-300 dark:disabled:bg-gray-700 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors"
           >
             + Share a story
           </button>
+        </div>
+
+        {/* Search and sort bar */}
+        <div className="flex flex-col sm:flex-row gap-3 mb-4">
+          <div className="flex-1 flex gap-2">
+            <input
+              type="text"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+              placeholder="Search stories..."
+              className="flex-1 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-lg px-4 py-2 text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 transition-colors"
+            />
+            <button
+              onClick={handleSearch}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm font-medium transition-colors"
+            >
+              Search
+            </button>
+            {search && (
+              <button
+                onClick={handleClearSearch}
+                className="px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg text-sm text-gray-500 hover:text-gray-900 dark:hover:text-white transition-colors"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+
+          <select
+            value={sort}
+            onChange={(e) => {
+              setSort(e.target.value);
+              setSkip(0);
+            }}
+            className="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-lg px-4 py-2 text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 transition-colors"
+          >
+            <option value="date">Latest</option>
+            <option value="votes">Most voted</option>
+            <option value="comments">Most discussed</option>
+          </select>
         </div>
 
         {/* Tag filter */}
@@ -121,7 +265,18 @@ export default function WarzonePanel() {
           )}
         </div>
 
-        {/* Create form */}
+        {/* Active search indicator */}
+        {search && (
+          <div className="flex items-center gap-2 mb-4">
+            <span className="text-sm text-gray-500">Results for</span>
+            <span className="text-sm font-medium text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 px-2 py-0.5 rounded">
+              "{search}"
+            </span>
+            <span className="text-sm text-gray-500">— {total} found</span>
+          </div>
+        )}
+
+        {/* Create post form */}
         {showForm && (
           <CreatePostForm
             onSubmit={handleCreate}
@@ -129,17 +284,50 @@ export default function WarzonePanel() {
           />
         )}
 
-        {/* Error */}
-        {error && <p className="text-red-500 text-center py-4">{error}</p>}
+        {/* General error */}
+        {error && (
+          <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-4 py-3 mb-4 flex items-center justify-between">
+            <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+            <button
+              onClick={() => setError(null)}
+              className="text-red-400 hover:text-red-600 transition-colors ml-4"
+            >
+              ✕
+            </button>
+          </div>
+        )}
 
         {/* Posts */}
         {loading ? (
-          <p className="text-gray-500 text-center py-12">Loading...</p>
+          <div className="grid gap-4">
+            {[...Array(3)].map((_, i) => (
+              <div
+                key={i}
+                className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg p-4 animate-pulse"
+              >
+                <div className="flex gap-4">
+                  <div className="w-6 flex flex-col gap-2 items-center">
+                    <div className="w-4 h-4 bg-gray-200 dark:bg-gray-700 rounded" />
+                    <div className="w-4 h-3 bg-gray-200 dark:bg-gray-700 rounded" />
+                    <div className="w-4 h-4 bg-gray-200 dark:bg-gray-700 rounded" />
+                  </div>
+                  <div className="flex-1 grid gap-2">
+                    <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded w-3/4" />
+                    <div className="h-3 bg-gray-200 dark:bg-gray-700 rounded w-full" />
+                    <div className="h-3 bg-gray-200 dark:bg-gray-700 rounded w-2/3" />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
         ) : posts.length === 0 ? (
           <div className="text-center py-16">
-            <p className="text-gray-500 font-medium">No stories yet</p>
+            <p className="text-4xl mb-3">⚔️</p>
+            <p className="text-gray-500 font-medium">
+              {search ? "No stories match your search" : "No stories yet"}
+            </p>
             <p className="text-gray-600 text-sm mt-1">
-              Be the first to share one
+              {search ? "Try different keywords" : "Be the first to share one"}
             </p>
           </div>
         ) : (
@@ -149,8 +337,11 @@ export default function WarzonePanel() {
                 key={post.id}
                 post={post}
                 auth={auth}
+                rateLimited={rateLimited}
                 onVote={handleVote}
                 onDelete={handleDelete}
+                onSelect={setSelectedPost}
+                onRequireAuth={() => setShowAuth(true)}
               />
             ))}
           </div>
@@ -162,7 +353,7 @@ export default function WarzonePanel() {
             <button
               onClick={() => setSkip((s) => Math.max(0, s - LIMIT))}
               disabled={skip === 0}
-              className="px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg text-sm disabled:opacity-40 disabled:cursor-not-allowed hover:border-gray-400 transition-colors"
+              className="px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg text-sm disabled:opacity-40 disabled:cursor-not-allowed hover:border-gray-400 dark:hover:border-gray-500 transition-colors"
             >
               ← Previous
             </button>
@@ -172,34 +363,85 @@ export default function WarzonePanel() {
             <button
               onClick={() => setSkip((s) => s + LIMIT)}
               disabled={skip + LIMIT >= total}
-              className="px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg text-sm disabled:opacity-40 disabled:cursor-not-allowed hover:border-gray-400 transition-colors"
+              className="px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg text-sm disabled:opacity-40 disabled:cursor-not-allowed hover:border-gray-400 dark:hover:border-gray-500 transition-colors"
             >
               Next →
             </button>
           </div>
         )}
+
+        {/* Not logged in hint */}
+        {!auth.isLoggedIn && (
+          <div className="mt-6 text-center py-4 border-t border-gray-100 dark:border-gray-800">
+            <p className="text-sm text-gray-500">
+              <button
+                onClick={() => setShowAuth(true)}
+                className="text-blue-500 hover:text-blue-400 font-medium transition-colors"
+              >
+                Login
+              </button>{" "}
+              to vote, comment, and share your own stories
+            </p>
+          </div>
+        )}
       </div>
 
-      {/* Auth modal — shows when unauthenticated user tries to do something */}
       {showAuth && <AuthPage onClose={() => setShowAuth(false)} />}
     </>
   );
 }
 
-function PostCard({ post, auth, onVote, onDelete }) {
+function PostCard({
+  post,
+  auth,
+  rateLimited,
+  onVote,
+  onDelete,
+  onSelect,
+  onRequireAuth,
+}) {
   const [showComments, setShowComments] = useState(false);
 
   const isOwner = auth.isLoggedIn && auth.username === post.author;
   const isAdmin = auth.isLoggedIn && auth.role === "ADMIN";
+  const isDeleted = post.deletedAt !== null && post.deletedAt !== undefined;
 
   return (
-    <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg p-4 hover:border-gray-300 dark:hover:border-gray-600 transition-colors">
+    <div
+      className={`bg-white dark:bg-gray-900 border rounded-lg p-4 transition-colors ${
+        isDeleted
+          ? "border-red-200 dark:border-red-900 opacity-60"
+          : "border-gray-200 dark:border-gray-800 hover:border-gray-300 dark:hover:border-gray-600"
+      }`}
+    >
+      {/* Deleted badge — only admins see deleted posts */}
+      {isDeleted && (
+        <div className="flex items-center gap-2 mb-3">
+          <span className="text-xs bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 px-2 py-0.5 rounded-full font-medium">
+            🗑 Deleted
+          </span>
+        </div>
+      )}
+
       <div className="flex gap-4">
         {/* Votes */}
         <div className="flex flex-col items-center gap-1 flex-shrink-0 pt-1">
           <button
-            onClick={() => onVote(post.id, 1)}
-            className="text-gray-400 hover:text-blue-500 transition-colors text-lg"
+            onClick={() => {
+              if (!auth.isLoggedIn) {
+                onRequireAuth();
+                return;
+              }
+              if (rateLimited) return;
+              onVote(post.id, 1);
+            }}
+            disabled={rateLimited || isDeleted}
+            title={rateLimited ? "Too many requests — slow down" : "Upvote"}
+            className={`transition-colors text-lg disabled:cursor-not-allowed ${
+              rateLimited
+                ? "text-gray-300 dark:text-gray-600"
+                : "text-gray-400 hover:text-blue-500"
+            }`}
           >
             ▲
           </button>
@@ -207,8 +449,21 @@ function PostCard({ post, auth, onVote, onDelete }) {
             {post.votes}
           </span>
           <button
-            onClick={() => onVote(post.id, -1)}
-            className="text-gray-400 hover:text-red-500 transition-colors text-lg"
+            onClick={() => {
+              if (!auth.isLoggedIn) {
+                onRequireAuth();
+                return;
+              }
+              if (rateLimited) return;
+              onVote(post.id, -1);
+            }}
+            disabled={rateLimited || isDeleted}
+            title={rateLimited ? "Too many requests — slow down" : "Downvote"}
+            className={`transition-colors text-lg disabled:cursor-not-allowed ${
+              rateLimited
+                ? "text-gray-300 dark:text-gray-600"
+                : "text-gray-400 hover:text-red-500"
+            }`}
           >
             ▼
           </button>
@@ -216,15 +471,25 @@ function PostCard({ post, auth, onVote, onDelete }) {
 
         {/* Content */}
         <div className="flex-1 min-w-0">
-          <h3 className="font-semibold text-gray-900 dark:text-white">
+          <h3
+            onClick={() => !isDeleted && onSelect(post)}
+            className={`font-semibold text-gray-900 dark:text-white ${
+              !isDeleted
+                ? "cursor-pointer hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+                : ""
+            }`}
+          >
             {post.title}
           </h3>
+
           <p className="text-gray-600 dark:text-gray-400 text-sm mt-1 line-clamp-3">
             {post.body}
           </p>
 
-          <div className="flex items-center gap-3 mt-3 text-xs text-gray-500">
-            <span>by {post.author}</span>
+          <div className="flex items-center gap-3 mt-3 text-xs text-gray-500 flex-wrap">
+            <span>
+              by <strong>{post.author}</strong>
+            </span>
             {post.tag && (
               <span className="bg-gray-100 dark:bg-gray-800 px-2 py-0.5 rounded">
                 #{post.tag}
@@ -234,42 +499,62 @@ function PostCard({ post, auth, onVote, onDelete }) {
           </div>
 
           {/* Actions */}
-          <div className="flex items-center gap-3 mt-3">
+          <div className="flex items-center gap-4 mt-3">
             <button
               onClick={() => setShowComments((s) => !s)}
-              className="text-xs text-gray-500 hover:text-blue-500 transition-colors"
+              className="text-xs text-gray-500 hover:text-blue-500 transition-colors flex items-center gap-1"
             >
-              💬 Comments
+              💬 {showComments ? "Hide comments" : "Comments"}
             </button>
-            {(isOwner || isAdmin) && (
+
+            {(isOwner || isAdmin) && !isDeleted && (
               <button
                 onClick={() => onDelete(post.id)}
-                className="text-xs text-gray-500 hover:text-red-500 transition-colors"
+                disabled={rateLimited}
+                className="text-xs text-gray-500 hover:text-red-500 transition-colors disabled:cursor-not-allowed disabled:opacity-40"
               >
                 🗑 Delete
               </button>
             )}
+
+            <button
+              onClick={() => !isDeleted && onSelect(post)}
+              className="text-xs text-gray-500 hover:text-blue-500 transition-colors ml-auto"
+            >
+              Read more →
+            </button>
           </div>
 
-          {/* Comments section */}
-          {showComments && <CommentsSection postId={post.id} auth={auth} />}
+          {/* Inline comments */}
+          {showComments && (
+            <CommentsSection
+              postId={post.id}
+              auth={auth}
+              rateLimited={rateLimited}
+              onRateLimit={() => {}}
+            />
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-function CommentsSection({ postId, auth }) {
+function CommentsSection({ postId, auth, rateLimited, onRateLimit }) {
   const [comments, setComments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [body, setBody] = useState("");
   const [showAuth, setShowAuth] = useState(false);
+  const [error, setError] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    fetchComments(postId).then((res) => {
-      setComments(res.data);
-      setLoading(false);
-    });
+    fetchComments(postId)
+      .then((res) => {
+        setComments(res.data);
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
   }, [postId]);
 
   async function handleAdd() {
@@ -277,15 +562,36 @@ function CommentsSection({ postId, auth }) {
       setShowAuth(true);
       return;
     }
-    if (!body.trim()) return;
-    const comment = await addComment(postId, body);
-    setComments((prev) => [...prev, comment]);
-    setBody("");
+    if (!body.trim() || submitting) return;
+
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      const comment = await addComment(postId, body);
+      setComments((prev) => [...prev, comment]);
+      setBody("");
+    } catch (err) {
+      if (err.message?.includes("429")) {
+        onRateLimit();
+        setError("Too many requests — slow down");
+      } else {
+        setError("Could not add comment");
+      }
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   async function handleDelete(commentId) {
-    await deleteComment(postId, commentId);
-    setComments((prev) => prev.filter((c) => c.id !== commentId));
+    try {
+      await deleteComment(postId, commentId);
+      setComments((prev) => prev.filter((c) => c.id !== commentId));
+    } catch (err) {
+      if (err.message?.includes("429")) {
+        setError("Too many requests — slow down");
+      }
+    }
   }
 
   return (
@@ -306,11 +612,11 @@ function CommentsSection({ postId, auth }) {
                 className="bg-gray-50 dark:bg-gray-800 rounded-lg px-3 py-2"
               >
                 <div className="flex items-start justify-between gap-2">
-                  <div>
+                  <div className="min-w-0">
                     <span className="text-xs font-medium text-gray-700 dark:text-gray-300">
                       {comment.author}
                     </span>
-                    <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5">
+                    <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5 break-words">
                       {comment.body}
                     </p>
                   </div>
@@ -319,7 +625,8 @@ function CommentsSection({ postId, auth }) {
                       auth.role === "ADMIN") && (
                       <button
                         onClick={() => handleDelete(comment.id)}
-                        className="text-gray-400 hover:text-red-500 transition-colors text-xs flex-shrink-0"
+                        disabled={rateLimited}
+                        className="text-gray-400 hover:text-red-500 transition-colors text-xs flex-shrink-0 disabled:opacity-40"
                       >
                         ✕
                       </button>
@@ -330,23 +637,35 @@ function CommentsSection({ postId, auth }) {
           </div>
         )}
 
-        {/* Add comment */}
+        {error && <p className="text-xs text-red-500 mb-2">{error}</p>}
+
+        {/* Add comment input */}
         <div className="flex gap-2">
           <input
             type="text"
             value={body}
             onChange={(e) => setBody(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleAdd()}
+            disabled={rateLimited}
             placeholder={
-              auth.isLoggedIn ? "Add a comment..." : "Login to comment..."
+              rateLimited
+                ? "Too many requests — slow down..."
+                : auth.isLoggedIn
+                  ? "Add a comment..."
+                  : "Login to comment..."
             }
-            className="flex-1 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 text-xs text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 transition-colors"
+            className={`flex-1 bg-gray-50 dark:bg-gray-800 border rounded-lg px-3 py-1.5 text-xs text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 transition-colors ${
+              rateLimited
+                ? "border-orange-300 dark:border-orange-700 bg-orange-50 dark:bg-orange-900/10"
+                : "border-gray-200 dark:border-gray-700"
+            }`}
           />
           <button
             onClick={handleAdd}
-            className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-medium transition-colors"
+            disabled={submitting || rateLimited}
+            className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-300 dark:disabled:bg-gray-700 disabled:cursor-not-allowed text-white rounded-lg text-xs font-medium transition-colors"
           >
-            Post
+            {submitting ? "..." : "Post"}
           </button>
         </div>
       </div>
@@ -360,36 +679,88 @@ function CreatePostForm({ onSubmit, onCancel }) {
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [tag, setTag] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [errors, setErrors] = useState({});
+
+  function validate() {
+    const e = {};
+    if (!title.trim()) e.title = "Title is required";
+    else if (title.length < 5) e.title = "Title must be at least 5 characters";
+    if (!body.trim()) e.body = "Story is required";
+    else if (body.length < 10) e.body = "Story must be at least 10 characters";
+    return e;
+  }
 
   async function handleSubmit() {
-    if (!title.trim() || !body.trim()) return;
+    const e = validate();
+    if (Object.keys(e).length > 0) {
+      setErrors(e);
+      return;
+    }
+    setSubmitting(true);
     await onSubmit({ title, body, tag });
+    setSubmitting(false);
   }
 
   return (
-    <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg p-4 mb-6">
+    <div className="bg-white dark:bg-gray-900 border border-blue-200 dark:border-blue-900 rounded-lg p-4 mb-6">
       <h3 className="font-semibold text-gray-900 dark:text-white mb-4">
         Share your war story
       </h3>
       <div className="grid gap-3">
-        <input
-          type="text"
-          placeholder="Title — what happened?"
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          className="w-full bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg px-4 py-2 text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
-        />
-        <textarea
-          placeholder="Tell the full story..."
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-          rows={4}
-          className="w-full bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg px-4 py-2 text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 resize-none"
-        />
+        {/* Title */}
+        <div>
+          <input
+            type="text"
+            placeholder="Title — what happened?"
+            value={title}
+            onChange={(e) => {
+              setTitle(e.target.value);
+              if (errors.title) setErrors((prev) => ({ ...prev, title: null }));
+            }}
+            className={`w-full bg-gray-50 dark:bg-gray-800 border rounded-lg px-4 py-2 text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 transition-colors ${
+              errors.title
+                ? "border-red-400"
+                : "border-gray-300 dark:border-gray-700"
+            }`}
+          />
+          {errors.title && (
+            <p className="text-xs text-red-500 mt-1">{errors.title}</p>
+          )}
+          <p className="text-xs text-gray-400 mt-1 text-right">
+            {title.length}/255
+          </p>
+        </div>
+
+        {/* Body */}
+        <div>
+          <textarea
+            placeholder="Tell the full story... What went wrong? What did you learn?"
+            value={body}
+            onChange={(e) => {
+              setBody(e.target.value);
+              if (errors.body) setErrors((prev) => ({ ...prev, body: null }));
+            }}
+            rows={5}
+            className={`w-full bg-gray-50 dark:bg-gray-800 border rounded-lg px-4 py-2 text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 transition-colors resize-none ${
+              errors.body
+                ? "border-red-400"
+                : "border-gray-300 dark:border-gray-700"
+            }`}
+          />
+          {errors.body && (
+            <p className="text-xs text-red-500 mt-1">{errors.body}</p>
+          )}
+          <p className="text-xs text-gray-400 mt-1 text-right">
+            {body.length} characters
+          </p>
+        </div>
+
+        {/* Tag */}
         <select
           value={tag}
           onChange={(e) => setTag(e.target.value)}
-          className="w-full bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg px-4 py-2 text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
+          className="w-full bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg px-4 py-2 text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 transition-colors"
         >
           <option value="">No tag</option>
           <option value="devops">devops</option>
@@ -398,7 +769,9 @@ function CreatePostForm({ onSubmit, onCancel }) {
           <option value="database">database</option>
           <option value="management">management</option>
         </select>
-        <div className="flex gap-2 justify-end">
+
+        {/* Actions */}
+        <div className="flex gap-2 justify-end mt-1">
           <button
             onClick={onCancel}
             className="px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-lg text-sm text-gray-600 dark:text-gray-400 hover:border-gray-400 transition-colors"
@@ -407,9 +780,10 @@ function CreatePostForm({ onSubmit, onCancel }) {
           </button>
           <button
             onClick={handleSubmit}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm font-medium transition-colors"
+            disabled={submitting}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-400 text-white rounded-lg text-sm font-medium transition-colors"
           >
-            Post story
+            {submitting ? "Posting..." : "Post story"}
           </button>
         </div>
       </div>
