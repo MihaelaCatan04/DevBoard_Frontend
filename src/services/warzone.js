@@ -74,8 +74,8 @@ export async function login(username, password) {
   return response.json()
 }
 
-export async function fetchPosts(limit = 10, skip = 0, tag = null, search = null) {
-  const params = new URLSearchParams({ limit, skip })
+export async function fetchPosts(limit = 10, skip = 0, tag = null, search = null, sort = 'date') {
+  const params = new URLSearchParams({ limit, skip, sort })
   if (tag)    params.append('tag', tag)
   if (search) params.append('search', search)
 
