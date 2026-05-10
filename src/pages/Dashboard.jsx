@@ -6,6 +6,7 @@ import NpmPanel from "../components/panels/NpmPanel";
 import DevToPanel from "../components/panels/DevToPanel";
 import ClocksPanel from "../components/panels/ClocksPanel";
 import BookmarksPanel from "../components/panels/BookmarksPanel";
+import WarzonePanel from "../components/panels/WarzonePanel";
 import SettingsDrawer from "../components/layout/SettingsDrawer";
 import { TABS } from "../constants/topics";
 
@@ -55,6 +56,7 @@ export default function Dashboard() {
         {activeTab === "devto" && <DevToPanel />}
         {activeTab === "clocks" && <ClocksPanel />}
         {activeTab === "bookmarks" && <BookmarksPanel />}
+        {activeTab === 'warzone' && <WarzonePanel />}
       </main>
     </div>
   );

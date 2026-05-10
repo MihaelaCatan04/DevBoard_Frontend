@@ -64,4 +64,5 @@ export const TABS = [
   { id: "devto", label: "DEV.to" },
   { id: "clocks", label: "Clocks" },
   { id: "bookmarks", label: "Bookmarks" },
+  { id: 'warzone', label: 'War Stories' }
 ];
